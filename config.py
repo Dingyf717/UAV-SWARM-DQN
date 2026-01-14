@@ -42,6 +42,8 @@ class DQNConfig:
         'T4': 10000
     }  #
 
+
+
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
@@ -78,3 +80,10 @@ class EnvConfig:
     # 目标生成规则索引 (用于One-hot编码顺序)
     TARGET_TYPE_ORDER = ['T1', 'T2', 'T3', 'T4']
     MISSILE_TYPE_ORDER = ['M1', 'M2']
+
+    # [新增] 归一化常数 (Normalization Constants)
+    # 估算依据：
+    # MAX_MISSILE_COST_SUM: 假设一个目标最多被20枚导弹攻击 (20 * 1.0)
+    # MAX_TARGET_VALUE: T4 目标的最大价值是 16.0
+    MAX_MISSILE_COST_SUM = 25.0
+    MAX_TARGET_VALUE = 16.0

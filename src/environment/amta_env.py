@@ -132,7 +132,11 @@ class AMTAEnv:
                 idx = self.m_type_to_idx[m.m_type]
                 n_j[idx] += m.cost
 
-            # v_j: target value (scalar)
+            # # [修改] 使用 EnvConfig.MAX_MISSILE_COST_SUM
+            # n_j = [x / EnvConfig.MAX_MISSILE_COST_SUM for x in n_j]
+
+            # # [修改] 使用 EnvConfig.MAX_TARGET_VALUE
+            # v_j = [t.value / EnvConfig.MAX_TARGET_VALUE]
             v_j = [t.value]
 
             # g_j^w: target type (one-hot)
