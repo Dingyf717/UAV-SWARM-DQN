@@ -13,56 +13,53 @@ from src.agent.podrl_agent import PODRLAgent
 
 
 def train():
-    # 1. 初始化环境与智能体
     env = AMTAEnv()
-    # 状态维度=7, 动作维度=7 (根据之前的测试结果)
-    # 你也可以动态获取: s_dim = env.reset()[0].shape[0]
+    # 这里的维度根据你的实际情况，之前代码是7
     agent = PODRLAgent(state_dim=7, action_dim=7)
 
-    # 记录训练曲线
     rewards_history = []
-    loss_history = []
 
-    # 创建模型保存目录
+    # [新增监控] 1. 初始化一个记录本，用来存各项指标的历史数据
+    stats_recorder = {
+        "state_max": [],  # 记录输入状态的最大值
+        "action_max": [],  # 记录输入动作矩阵的最大值
+        "loss": [],  # 记录 Loss
+        "q_mean": [],  # 记录平均 Q 值
+        "grad_norm": []  # 记录梯度模长（判断是否爆炸）
+    }
+
     if not os.path.exists('checkpoints'):
         os.makedirs('checkpoints')
 
     print(f"Start Training for {DQNConfig.NUM_EPISODES} episodes...")
-    print(f"Device: {DQNConfig.DEVICE}")
 
     for episode in range(DQNConfig.NUM_EPISODES):
         # -------------------------------------------------------
         # Episode Start
         # -------------------------------------------------------
-        # 论文使用 N=9, rho=3 进行训练 [cite: 589-590]
         state, action_matrix = env.reset(n_targets=9, rho=3)
 
-        episode_buffer = []  # 暂存区：(s, a, r_local, ns, na_mat, done, t_type)
-        total_local_reward = 0
+        # [新增监控] 2. 探针 A：检查输入数据的尺度
+        # 如果这里打印出来经常 > 10，说明必须做归一化
+        stats_recorder["state_max"].append(np.max(state))
+        stats_recorder["action_max"].append(np.max(action_matrix))
+
+        episode_buffer = []
 
         done = False
         while not done:
-            # A. 选择动作
             action_idx = agent.select_action(state, action_matrix)
-
-            # 获取被选目标的类型（用于公平采样）[cite: 425-427]
             selected_target_type = env.targets[action_idx].t_type
-
-            # 记录当前动作向量 (用于存入Buffer)
-            # action_matrix 是所有目标的矩阵，我们只需要存被选中的那个向量
             selected_action_vec = action_matrix[action_idx]
 
-            # B. 执行环境交互
             next_obs, r_local, done, info = env.step(action_idx)
 
-            # 解析 Next State
             if not done:
                 next_state, next_action_matrix = next_obs
             else:
                 next_state = None
                 next_action_matrix = None
 
-            # C. 暂存 Transition (注意：这里只存了 r_local)
             episode_buffer.append({
                 's': state,
                 'a': selected_action_vec,
@@ -73,26 +70,21 @@ def train():
                 't_type': selected_target_type
             })
 
-            total_local_reward += r_local
-
-            # 状态滚动
             state = next_state
             action_matrix = next_action_matrix
 
         # -------------------------------------------------------
         # Episode End: Reward Backfilling
         # -------------------------------------------------------
-        # 获取全局奖励 (Global Reward)
-        # 在 amta_env.py 的 step 中，Done 时 info 里包含了 global_reward
         r_global = info.get('global_reward', 0.0)
         final_effectiveness = info.get('total_effectiveness', 0.0)
-
         alpha = EnvConfig.REWARD_ALPHA
 
-        # 回填奖励并推入 Replay Buffer
         for step_data in episode_buffer:
-            # 混合奖励公式: r = alpha * r_l + (1 - alpha) * r_g
             mixed_reward = alpha * step_data['r_local'] + (1.0 - alpha) * r_global
+
+            # [注意] 如果之后发现 Q 值过大，可以在这里除以 10.0 进行缩放
+            # mixed_reward = mixed_reward / 10.0
 
             agent.memory.push(
                 state=step_data['s'],
@@ -101,48 +93,67 @@ def train():
                 next_state=step_data['ns'],
                 next_action_matrix=step_data['na_mat'],
                 done=step_data['done'],
-                target_type=step_data['t_type']  # 关键：存入对应的子池子
+                target_type=step_data['t_type']
             )
 
         # -------------------------------------------------------
-        # Agent Update (Training)
+        # Agent Update & [新增监控]
         # -------------------------------------------------------
-        # 可以在每个 Episode 结束时训练若干次，或者每步训练
-        # 论文 Algorithm 1 是在 Episode 结束后采样训练 [cite: 343-344]
-        # "At the end of an episode, a mini-batch ... is sampled"
-        loss = agent.update()
+        # 注意：这里假设你已经修改了 podrl_agent.py 的 update() 方法，让它返回一个字典
+        diagnostics = agent.update()
         agent.update_epsilon()
 
+        # [新增监控] 3. 探针 B：记录网络健康状况
+        # 如果 diagnostics 不为空（说明发生了更新），就把数据记下来
+        if diagnostics:
+            # 兼容旧代码：如果未修改 agent.py，diagnostics 可能只是一个 float loss
+            if isinstance(diagnostics, dict):
+                stats_recorder["loss"].append(diagnostics["loss"])
+                stats_recorder["q_mean"].append(diagnostics["q_mean"])
+                stats_recorder["grad_norm"].append(diagnostics["grad_norm"])
+            else:
+                # 如果你还没改 agent.py，暂时只记 loss，但这样就看不到梯度了
+                stats_recorder["loss"].append(diagnostics)
+
         # -------------------------------------------------------
-        # Logging
+        # Logging & [新增监控报告]
         # -------------------------------------------------------
         rewards_history.append(final_effectiveness)
-        if loss != 0:
-            loss_history.append(loss)
 
         if (episode + 1) % 100 == 0:
             avg_reward = np.mean(rewards_history[-100:])
-            print(f"Ep {episode + 1}/{DQNConfig.NUM_EPISODES} | "
-                  f"Avg Effect: {avg_reward:.2f} | "
-                  f"Epsilon: {agent.epsilon:.2f} | "
-                  f"Loss: {loss:.4f}")
 
-        # 定期保存模型
+            # [新增监控] 4. 打印体检报告
+            # 计算最近 100 轮的平均值
+            avg_s_max = np.mean(stats_recorder["state_max"][-100:])
+            avg_a_max = np.mean(stats_recorder["action_max"][-100:])
+
+            # 安全获取 update 相关的指标（防止初期还没开始 update 为空）
+            avg_q = np.mean(stats_recorder["q_mean"][-100:]) if stats_recorder["q_mean"] else 0
+            avg_grad = np.mean(stats_recorder["grad_norm"][-100:]) if stats_recorder["grad_norm"] else 0
+            avg_loss = np.mean(stats_recorder["loss"][-100:]) if stats_recorder["loss"] else 0
+
+            print("-" * 60)
+            print(f"Episode {episode + 1} | Avg Effect: {avg_reward:.2f}")
+            print(f"--- 诊断报告 (Diagnostics) ---")
+            print(f"1. 输入数据最大值 (Input Scale):")
+            print(f"   State Max: {avg_s_max:.2f} (理想值应接近 1.0)")
+            print(f"   Action Max: {avg_a_max:.2f} (如果 > 10，必须归一化！)")
+            print(f"2. 网络状态 (Network Health):")
+            print(f"   Avg Q-Value: {avg_q:.2f} (如果 > 200，说明奖励可能需要缩放)")
+            print(f"   Avg Grad Norm: {avg_grad:.4f} (如果 > 10 或被截断，说明梯度爆炸)")
+            print("-" * 60)
+
         if (episode + 1) % 500 == 0:
             path = f"checkpoints/podrl_ep{episode + 1}.pth"
             torch.save(agent.eval_net.state_dict(), path)
             print(f"Model saved to {path}")
 
-    # -------------------------------------------------------
-    # Plotting Results
-    # -------------------------------------------------------
+    # Plotting
     plt.figure(figsize=(10, 5))
     plt.plot(rewards_history)
-    plt.title("Training Curve: Combat Effectiveness")
-    plt.xlabel("Episode")
-    plt.ylabel("Total Effectiveness")
+    plt.title("Training Curve")
     plt.savefig("training_curve.png")
-    print("Training finished. Curve saved to training_curve.png")
 
 
 if __name__ == "__main__":

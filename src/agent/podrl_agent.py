@@ -66,7 +66,7 @@ class PODRLAgent:
     def update(self):
         """执行一步梯度下降"""
         if not self.memory.is_ready(DQNConfig.BATCH_SIZE):
-            return 0.0
+            return None
 
         # 1. 采样
         states, actions, rewards, next_states, next_action_matrices, dones = self.memory.sample(DQNConfig.BATCH_SIZE)
@@ -111,13 +111,30 @@ class PODRLAgent:
         loss = F.mse_loss(current_q, target_q)
         self.optimizer.zero_grad()
         loss.backward()
+
+        # [诊断点 1]: 计算梯度模长 (Gradient Norm)
+        # 这能告诉我们梯度是否过大（导致震荡）或为0（导致不学习）
+        total_norm = 0.0
+        for p in self.eval_net.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+
         torch.nn.utils.clip_grad_norm_(self.eval_net.parameters(), 1.0)
         self.optimizer.step()
 
         # 5. 软更新 Target Net
         self._soft_update(self.target_net, self.eval_net)
 
-        return loss.item()
+        # [诊断点 2]: 返回详细的统计字典
+        return {
+            "loss": loss.item(),
+            "q_mean": current_q.mean().item(),  # 平均 Q 值
+            "q_max": current_q.max().item(),  # 最大 Q 值
+            "q_target_mean": target_q.mean().item(),  # 目标 Q 值均值
+            "grad_norm": total_norm  # 梯度模长
+        }
 
     def _soft_update(self, target_net, source_net):
         # beta 接近 1 (0.99)，意味着保留 99% 的旧参数，只更新 1%

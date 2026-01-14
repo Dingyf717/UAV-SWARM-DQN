@@ -26,29 +26,6 @@ class PODRLNetwork(nn.Module):
         # Layer 2
         self.fc2 = nn.Linear(hidden_dims[0], hidden_dims[1])
 
-        # Layer 3 (Skip connection target)
-        # Input to fc3 is: Output of fc2 + Output of fc1 (Skip Connection)
-        # Note: Depending on implementation, skip connection usually implies element-wise sum.
-        # However, layer 1 is 64 dim, layer 2 output is 128 dim. They cannot be summed directly.
-        # Paper citation [30] (ResNet) usually implies same dimension or projection.
-        # Looking at Fig 3(a/b) arrows: The arrow goes from Layer 1 Output -> Layer 3 Input.
-        # Layer 3 input size must match the combined features.
-        # Option A: Concatenation (64+128).
-        # Option B: ResNet style add (requires projection).
-        # Given "Skip connection" usually means addition in DL, but dim mismatch exists (64 vs 128).
-        # However, if we look at Table I structure: (64, 128, 64).
-        # Most likely implementation for simple vectors: Concatenation or Linear Projection.
-        # Let's assume Concatenation for safety unless dimensions match.
-        # BUT, standard ResNet adds. Let's look closer at Fig 3.
-        # The arrow bypasses the middle layer.
-        # Let's try to project Layer 1 to match Layer 2 output if we want to add,
-        # OR simply feed Layer 1 output INTO Layer 3 alongside Layer 2 output.
-        # Let's assume the latter: FC3 input = FC2_out (128) + FC1_out (64) = 192 dims?
-        # No, Table I says "neurons of hidden layers: (64, 128, 64)". This refers to OUTPUT size usually.
-        # Let's implement a Linear projection for the skip connection to allow addition,
-        # OR just concatenate. Concatenation is standard in older RL papers.
-        # Let's use Concatenation: Input to L3 = L2_out (128) + L1_out (64).
-
         self.fc3 = nn.Linear(hidden_dims[1] + hidden_dims[0], hidden_dims[2])
 
         # Output Layer
